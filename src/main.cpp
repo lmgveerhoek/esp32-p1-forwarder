@@ -250,9 +250,9 @@ void getTelegramTask(void *pvParameters)
   nowSecs = time(nullptr);
   gmtime_r(&nowSecs, &timeinfo);
 
-  // Calculate the delay until the next minute starts
-  int delayToNextMinute = (60 - timeinfo.tm_sec) * 1000;
-  vTaskDelay(delayToNextMinute / portTICK_PERIOD_MS);
+  // Calculate the delay until the next five-minute boundary starts
+  int delayToNextFiveMinuteBoundary = (5 - timeinfo.tm_min % 5) * 60 * 1000 - timeinfo.tm_sec * 1000;
+  vTaskDelay(delayToNextFiveMinuteBoundary / portTICK_PERIOD_MS);
 
   // Define the wake time for the first iteration
   TickType_t xLastWakeTime = xTaskGetTickCount();
@@ -262,8 +262,8 @@ void getTelegramTask(void *pvParameters)
   {
     getTelegram();
 
-    // Delay the task until 60 seconds have passed since the previous wake time or until the first minute boundary
-    vTaskDelayUntil(&xLastWakeTime, INTERVAL_SEND / portTICK_PERIOD_MS);
+    // Delay the task until 5 minutes have passed since the previous wake time or until the next five-minute boundary
+    vTaskDelayUntil(&xLastWakeTime, INTERVAL_SEND / portTICK_PERIOD_MS - xTaskGetTickCount() % (5 * 60 * 1000) / portTICK_PERIOD_MS);
   }
 }
 
