@@ -1,0 +1,1 @@
+#define INTERVAL_SEND 60000

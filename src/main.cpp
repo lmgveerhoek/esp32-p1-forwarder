@@ -7,7 +7,8 @@
 #include <WiFiClientSecure.h>
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
-#include "secrets.h" 
+#include "secrets.h"
+#include "constants.h"
 
 const char *ssid = WIFI_SSID;
 const char *password = WIFI_PASS;
@@ -261,8 +262,8 @@ void getTelegramTask(void *pvParameters)
   {
     getTelegram();
 
-    // Delay the task until 10 seconds have passed since the previous wake time or until the first minute boundary
-    vTaskDelayUntil(&xLastWakeTime, 10000 / portTICK_PERIOD_MS);
+    // Delay the task until 60 seconds have passed since the previous wake time or until the first minute boundary
+    vTaskDelayUntil(&xLastWakeTime, INTERVAL_SEND / portTICK_PERIOD_MS);
   }
 }
 
@@ -294,7 +295,11 @@ void setup()
 {
   Serial.begin(115200);
   Serial.println("Booting");
+
+  // Connect to WiFi network
   WiFi.mode(WIFI_STA);
+  WiFi.config(INADDR_NONE, INADDR_NONE, INADDR_NONE, INADDR_NONE);
+  WiFi.setHostname("hw-p1meter-forwarder");
   WiFi.begin(ssid, password);
   while (WiFi.waitForConnectResult() != WL_CONNECTED)
   {
@@ -307,6 +312,8 @@ void setup()
   Serial.print("IP address: ");
   Serial.println(WiFi.localIP());
   Serial.println("Connected to: " + WiFi.SSID());
+  Serial.print("ESP Board MAC Address:  ");
+  Serial.println(WiFi.macAddress());
 
   // Set clock for SSL
   setClock();
@@ -315,7 +322,8 @@ void setup()
   // ArduinoOTA.setPort(3232);
 
   // Hostname defaults to esp3232-[MAC]
-  ArduinoOTA.setHostname("hw-p1-forwarder");
+  // ArduinoOTA.setMdnsEnabled(true);
+  // ArduinoOTA.setHostname("hw-p1meter-forwarder");
 
   // No authentication by default
   // ArduinoOTA.setPassword("admin");
@@ -380,7 +388,7 @@ void setup()
       "Send to Supabase",      // Name of the task (for debugging)
       4096,                    // Stack size (bytes)
       NULL,                    // Parameter to pass
-      1,                       // Task priority
+      2,                       // Task priority
       &sendTelegramTaskHandle, // Task handle
       1);                      // Core to run the task on
 
@@ -390,7 +398,7 @@ void setup()
       "OTA",          // Name of the task (for debugging)
       4096,           // Stack size (bytes)
       NULL,           // Parameter to pass
-      1,              // Task priority
+      3,              // Task priority
       &otaTaskHandle, // Task handle
       1);             // Core to run the task on
 }
