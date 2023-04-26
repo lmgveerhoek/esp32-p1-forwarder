@@ -3,10 +3,7 @@
 #include <WiFiUdp.h>
 #include <ArduinoOTA.h>
 #include <HTTPClient.h>
-#include <ESP32Ping.h>
 #include <WiFiClientSecure.h>
-#include <freertos/FreeRTOS.h>
-#include <freertos/task.h>
 #include "secrets.h"
 #include "constants.h"
 
@@ -22,10 +19,8 @@ String response;
 String previousResponse;
 bool isNewResponse = false;
 
-// Define the task handles for the getTelegramTask, sendTelegramTask and otaTask
-TaskHandle_t getTelegramTaskHandle;
-TaskHandle_t sendTelegramTaskHandle;
-TaskHandle_t otaTaskHandle;
+// TCP server at port 80 will respond to HTTP requests
+WiFiServer server(80);
 
 // Root CA certificate of supabase
 const char *rootCACertificate =
@@ -128,26 +123,13 @@ String getHostnameP1Meter(int n)
   return hostname;
 }
 
-void pingGoogle()
-{
-  bool success = Ping.ping("www.google.com", 3);
-
-  if (!success)
-  {
-    Serial.println("Ping failed");
-    return;
-  }
-
-  Serial.println("Ping succesful.");
-}
-
 // Function to get the telegram data
-void getTelegram()
+bool getTelegram()
 {
   HTTPClient http;
 
   // Announce to serial that the task is running
-  Serial.println("Task: Telegram");
+  Serial.println("Function: Telegram");
 
   // Access the p1-meter API and get the telegram
   // If the http request was successful, save the response if it is not the same as the previous response
@@ -166,7 +148,7 @@ void getTelegram()
         previousResponse = response;
 
         // Notify the sendTelegram task to send the data
-        xTaskNotifyGive(sendTelegramTaskHandle);
+        return true;
       }
     }
   }
@@ -174,18 +156,24 @@ void getTelegram()
   {
     Serial.println("Error on HTTP request");
     http.end();
-    vTaskDelay(pdMS_TO_TICKS(5000));
+    delay(5000);
     ESP.restart();
   }
   http.end();
+
+  return false;
 }
 
 void sendToSupabase()
 {
+  // Announce to serial that the function is running
+  Serial.println("Function: Supabase");
+
   WiFiClientSecure *client = new WiFiClientSecure;
   if (client)
   {
-    client->setCACert(rootCACertificate);
+    // client->setCACert(rootCACertificate);
+    client->setInsecure();
 
     {
       // Add a scoping block for HTTPClient https to make sure it is destroyed before WiFiClientSecure *client is
@@ -235,62 +223,6 @@ void sendToSupabase()
   }
 }
 
-// Task to get the telegram data every 10 seconds
-void getTelegramTask(void *pvParameters)
-{
-  time_t nowSecs;
-  struct tm timeinfo;
-
-  // Wait until the clock is synced
-  while (time(nullptr) < 8 * 3600 * 2)
-  {
-    vTaskDelay(1000 / portTICK_PERIOD_MS);
-  }
-
-  nowSecs = time(nullptr);
-  gmtime_r(&nowSecs, &timeinfo);
-
-  // Calculate the delay until the next minute starts
-  int delayToNextMinute = (60 - timeinfo.tm_sec) * 1000;
-  vTaskDelay(delayToNextMinute / portTICK_PERIOD_MS);
-
-  // Define the wake time for the first iteration
-  TickType_t xLastWakeTime = xTaskGetTickCount();
-
-  // Start the task loop
-  while (true)
-  {
-    getTelegram();
-
-    // Delay the task until 60 seconds have passed since the previous wake time or until the first minute boundary
-    vTaskDelayUntil(&xLastWakeTime, INTERVAL_SEND / portTICK_PERIOD_MS);
-  }
-}
-
-void sendToSupabaseTask(void *pvParameters)
-{
-  while (true)
-  {
-    // Announce to serial that the task is running
-    Serial.println("Task: Supabase");
-
-    // Wait for the getTelegram task to notify that new data is available
-    ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
-
-    // Send the data to Supabase
-    sendToSupabase();
-  }
-}
-
-void otaTask(void *pvParameters)
-{
-  while (true)
-  {
-    ArduinoOTA.handle();
-    vTaskDelay(pdMS_TO_TICKS(1000));
-  }
-}
-
 void setup()
 {
   Serial.begin(115200);
@@ -308,6 +240,21 @@ void setup()
     ESP.restart();
   }
 
+  // Set up mDNS responder:
+  // - first argument is the domain name, in this example
+  //   the fully-qualified domain name is "esp32.local"
+  // - second argument is the IP address to advertise
+  //   we send our IP address on the WiFi network
+  if (!MDNS.begin("esp32"))
+  {
+    Serial.println("Error setting up MDNS responder!");
+    while (1)
+    {
+      delay(1000);
+    }
+  }
+  Serial.println("mDNS responder started");
+
   Serial.println("Ready");
   Serial.print("IP address: ");
   Serial.println(WiFi.localIP());
@@ -315,22 +262,15 @@ void setup()
   Serial.print("ESP Board MAC Address:  ");
   Serial.println(WiFi.macAddress());
 
+  // Start TCP (HTTP) server
+  server.begin();
+  Serial.println("TCP server started");
+
+  // Add service to MDNS-SD
+  MDNS.addService("http", "tcp", 80);
+
   // Set clock for SSL
   setClock();
-
-  // Port defaults to 3232
-  // ArduinoOTA.setPort(3232);
-
-  // Hostname defaults to esp3232-[MAC]
-  // ArduinoOTA.setMdnsEnabled(true);
-  // ArduinoOTA.setHostname("hw-p1meter-forwarder");
-
-  // No authentication by default
-  // ArduinoOTA.setPassword("admin");
-
-  // Password can be set with it's md5 value as well
-  // MD5(admin) = 21232f297a57a5a743894a0e4a801fc3
-  // ArduinoOTA.setPasswordHash("21232f297a57a5a743894a0e4a801fc3");
 
   ArduinoOTA
       .onStart([]()
@@ -371,39 +311,22 @@ void setup()
   // Get the hostname of the first p1-meter found
   hostname = getHostnameP1Meter(n);
   deviceIp = MDNS.IP(0).toString();
-
-  // Create the task to get the telegram
-  xTaskCreatePinnedToCore(
-      getTelegramTask,        // Function that should be called
-      "Get Telegram",         // Name of the task (for debugging)
-      4096,                   // Stack size (bytes)
-      NULL,                   // Parameter to pass
-      1,                      // Task priority
-      &getTelegramTaskHandle, // Task handle
-      0);                     // Core to run the task on
-
-  // Create the task to send data to Supabase
-  xTaskCreatePinnedToCore(
-      sendToSupabaseTask,      // Function that should be called
-      "Send to Supabase",      // Name of the task (for debugging)
-      4096,                    // Stack size (bytes)
-      NULL,                    // Parameter to pass
-      2,                       // Task priority
-      &sendTelegramTaskHandle, // Task handle
-      1);                      // Core to run the task on
-
-  // Create task for OTA
-  xTaskCreatePinnedToCore(
-      otaTask,        // Function that should be called
-      "OTA",          // Name of the task (for debugging)
-      4096,           // Stack size (bytes)
-      NULL,           // Parameter to pass
-      3,              // Task priority
-      &otaTaskHandle, // Task handle
-      1);             // Core to run the task on
 }
 
 void loop()
 {
-  // Empty loop
+  ArduinoOTA.handle();
+
+  // If getTelegram returns true, call the sendToSupabase function
+  if (getTelegram())
+  {
+    sendToSupabase();
+  }
+
+  // Calculate remaining time until next minute starts
+  unsigned long currentTime = millis();
+  unsigned long remainingTime = 60000 - (currentTime % 60000);
+
+  // Delay until next minute starts
+  delay(remainingTime);
 }
